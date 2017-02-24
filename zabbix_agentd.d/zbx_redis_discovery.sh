@@ -147,7 +147,7 @@ generate_redis_stats_report() {
 
 echo -n '{"data":['
 for s in $LIST; do
-    HOST=$(echo $s | cut -d":" -f3)
+    HOST=$(echo $s | cut -d":" -f3 | sed 's/*/127.0.0.1/g')
     PORT=$(echo $s | cut -d":" -f4)
 
     # TRY PASSWORD PER EACH DISCOVERED INSTANCE
@@ -183,8 +183,9 @@ for s in $LIST; do
         done
     else
         INSTANCE=$(discover_redis_instance $HOST $PORT "")
-        RDB_PATH=$(discover_redis_rdb_database $HOST $PORT $PASSWORD "")
-        SLAVES=$(discover_redis_avalable_slaves $HOST $PORT $PASSWORD)
+        RDB_PATH=$(discover_redis_rdb_database $HOST $PORT "")
+		COMMANDS=$(discover_redis_avalable_commands $HOST $PORT "")
+        SLAVES=$(discover_redis_avalable_slaves $HOST $PORT "")
 
         if [[ -n $INSTANCE ]]; then
 
