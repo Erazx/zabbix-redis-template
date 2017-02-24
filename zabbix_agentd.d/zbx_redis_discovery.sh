@@ -6,148 +6,131 @@ IFS=$'\n'
 PASSWORDS=( "$@" )
 LIST=$(ps -eo uname,args | grep -v grep | grep redis-server | tr -s [:blank:] ":")
 REDIS_CLI=$(whereis -b redis-cli | cut -d":" -f2 | tr -d [:space:])
+INFOCMD=INFO
+CONFCMD=CONFIG
+SLOWCMD=SLOWLOG
 
 if [ "$DISCOVERY_TYPE" == "info" ]; then
     echo "USAGE: ./zbx_redis_discovery.sh where"
-    echo "general - argument generate report with discovered instances\n"
-    echo "stats - generates report for avalable commands\n"
-    echo "replication - generates report for avalable slaves\n"
+    echo "general - argument generate report with discovered instances"
+    echo "stats - generates report for avalable commands"
+    echo "replication - generates report for avalable slaves"
     exit 1
 fi
 
-# PROBE DISCOVERED REDIS INSTACES - TO GET INSTANCE NAME#
-discover_redis_instance() {
-    HOST=$1
-    PORT=$2
-    PASSWORD=$3
-
-    ALIVE=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ping)
-
+# CHECK REDIS INSTANCE AVAILABILITY
+is_redis_unavailability() {
+    local HOST=$1
+    local PORT=$2
+    local PASSWORD=$3
+    local ALIVE=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ping)
     if [[ $ALIVE != "PONG" ]]; then
         return 0
     else
-        INSTANCE=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" info | grep config_file  | sed 's/.conf//g' | rev | cut -d "/" -f1 | rev | tr -d [:space:] | tr [:lower:] [:upper:])
-        INSTANCE_RDB_PATH=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" config get *"dir" | cut -d " " -f2 | sed -n 2p)
-        INSTANCE_RDB_FILE=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" config get *"dbfilename" | cut -d " " -f2 | sed -n 2p)
-
+        return 1
     fi
+}
+
+# PROBE DISCOVERED REDIS INSTACES - TO GET INSTANCE NAME#
+discover_redis_instance() {
+    local HOST=$1
+    local PORT=$2
+    local PASSWORD=$3
+
+    local INSTANCE=$(hostname)-$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ${INFOCMD} | grep config_file  | sed 's/.conf//g' | rev | cut -d "/" -f1 | rev | tr -d [:space:] | tr [:lower:] [:upper:])
+    local INSTANCE_RDB_PATH=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ${CONFCMD} get *"dir" | cut -d " " -f2 | sed -n 2p)
+    local INSTANCE_RDB_FILE=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ${CONFCMD} get *"dbfilename" | cut -d " " -f2 | sed -n 2p)
 
     echo $INSTANCE
 }
 
 # PROBE DISCOVERED REDIS INSTACES - TO GET RDB DATABASE#
 discover_redis_rdb_database() {
-    HOST=$1
-    PORT=$2
-    PASSWORD=$3
+    local HOST=$1
+    local PORT=$2
+    local PASSWORD=$3
 
-    ALIVE=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ping)
-
-    if [[ $ALIVE != "PONG" ]]; then
-        return 0
-    else
-        INSTANCE_RDB_PATH=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" config get *"dir" | cut -d " " -f2 | sed -n 2p)
-        INSTANCE_RDB_FILE=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" config get *"dbfilename" | cut -d " " -f2 | sed -n 2p)
-    fi
+    local INSTANCE_RDB_PATH=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ${CONFCMD} get *"dir" | cut -d " " -f2 | sed -n 2p)
+    local INSTANCE_RDB_FILE=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ${CONFCMD} get *"dbfilename" | cut -d " " -f2 | sed -n 2p)
 
     echo $INSTANCE_RDB_PATH/$INSTANCE_RDB_FILE
 }
 
 discover_redis_avalable_commands() {
-    HOST=$1
-    PORT=$2
-    PASSWORD=$3
+    local HOST=$1
+    local PORT=$2
+    local PASSWORD=$3
 
-    ALIVE=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ping)
-
-    if [[ $ALIVE != "PONG" ]]; then
-        return 0
-    else
-        REDIS_COMMANDS=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" info all | grep cmdstat | cut -d":" -f1)
-    fi
+    local REDIS_COMMANDS=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ${INFOCMD} all | grep cmdstat | cut -d":" -f1)
 
     ( IFS=$'\n'; echo "${REDIS_COMMANDS[*]}" )
 }
 
 discover_redis_avalable_slaves() {
-    HOST=$1
-    PORT=$2
-    PASSWORD=$3
+    local HOST=$1
+    local PORT=$2
+    local PASSWORD=$3
 
-    ALIVE=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ping)
-
-    if [[ $ALIVE != "PONG" ]]; then
-        return 0
-    else
-        REDIS_SLAVES=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" info all | grep ^slave | cut -d ":" -f1 | grep [0-1024])
-    fi
+    local REDIS_SLAVES=$($REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ${INFOCMD} all | grep ^slave | cut -d ":" -f1 | grep [0-1024])
 
     ( IFS=$'\n'; echo "${REDIS_SLAVES[*]}" )
 }
 
 # GENERATE ZABBIX DISCOVERY JSON REPONSE #
 generate_general_discovery_json() {
-    HOST=$1
-    PORT=$2
-    INSTANCE=$3
-    RDB_PATH=$4
+    local HOST=$1
+    [ "$ALL_FLAG" == 'TRUE' ] && HOST='*'
+    local PORT=$2
+    local INSTANCE=$3
+    local RDB_PATH=$4
+  
+    printf "{\"{#HOST}\":\"%s\",\"{#PORT}\":\"%s\",\"{#INSTANCE}\":\"%s\",\"{#RDB_PATH}\":\"%s\"}," "$HOST" "$PORT" "$INSTANCE" "$RDB_PATH"
 
-    echo -n '{'
-    echo -n '"{#HOST}":"'$HOST'",'
-    echo -n '"{#PORT}":"'$PORT'",'
-    echo -n '"{#INSTANCE}":"'$INSTANCE'",'
-    echo -n '"{#RDB_PATH}":"'$RDB_PATH'"'
-    echo -n '},'
 }
 
 # GENERATE ZABBIX DISCOVERY JSON REPONSE #
 generate_commands_discovery_json() {
-    HOST=$1
-    PORT=$2
-    COMMAND=$3
-    INSTANCE=$4
+    local HOST=$1
+    [ "$ALL_FLAG" == 'TRUE' ] && HOST='*'
+    local PORT=$2
+    local COMMAND=$3
+    local INSTANCE=$4
 
-    echo -n '{'
-    echo -n '"{#HOST}":"'$HOST'",'
-    echo -n '"{#PORT}":"'$PORT'",'
-    echo -n '"{#COMMAND}":"'$COMMAND'",'
-    echo -n '"{#INSTANCE}":"'$INSTANCE'"'
-    echo -n '},'
+    printf "{\"{#HOST}\":\"%s\",\"{#PORT}\":\"%s\",\"{#COMMAND}\":\"%s\",\"{#INSTANCE}\":\"%s\"}," "$HOST" "$PORT" "$COMMAND" "$INSTANCE"
 }
 
 # GENERATE ZABBIX DISCOVERY JSON REPONSE #
 generate_replication_discovery_json() {
-    HOST=$1
-    PORT=$2
-    SLAVE=$3
-    INSTANCE=$4
+    local HOST=$1
+    [ "$ALL_FLAG" == 'TRUE' ] && HOST='*'
+    local PORT=$2
+    local SLAVE=$3
+    local INSTANCE=$4
 
-    echo -n '{'
-    echo -n '"{#HOST}":"'$HOST'",'
-    echo -n '"{#PORT}":"'$PORT'",'
-    echo -n '"{#SLAVE}":"'$SLAVE'",'
-    echo -n '"{#INSTANCE}":"'$INSTANCE'"'
-    echo -n '},'
+    printf "{\"{#HOST}\":\"%s\",\"{#PORT}\":\"%s\",\"{#SLAVE}\":\"%s\",\"{#INSTANCE}\":\"%s\"}," "$HOST" "$PORT" "$SLAVE" "$INSTANCE"
 }
 
 
 # GENERATE ALL REPORTS REQUIRED FOR REDIS MONITORING #
 generate_redis_stats_report() {
-    HOST=$1
-    PORT=$2
-    PASSWORD=$3
+    local HOST=$1
+    local PORT=$2
+    local PASSWORD=$3
 
-    REDIS_REPORT=$(stdbuf -oL $REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" info all &> /tmp/redis-$HOST-$PORT)
-    REDIS_SLOWLOG_LEN=$(stdbuf -oL $REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" slowlog len | cut -d " " -f2 &> /tmp/redis-$HOST-$PORT-slowlog-len; $REDIS_CLI -h $HOST -p $PORT -a $PASSWORD slowlog reset > /dev/null  )
-    REDIS_SLOWLOG_RAW=$(stdbuf -oL $REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" slowlog get &> /tmp/redis-$HOST-$PORT-slowlog-raw)
-    REDIS_MAX_CLIENTS=$(stdbuf -oL $REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" config get *"maxclients"* | cut -d " " -f2 | sed -n 2p &> /tmp/redis-$HOST-$PORT-maxclients)
+    local REDIS_REPORT=$(stdbuf -oL $REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ${INFOCMD} all &> /tmp/redis-$HOST-$PORT)
+    local REDIS_SLOWLOG_LEN=$(stdbuf -oL $REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ${SLOWCMD} len | cut -d " " -f2 &> /tmp/redis-$HOST-$PORT-slowlog-len; $REDIS_CLI -h $HOST -p $PORT -a $PASSWORD ${SLOWCMD} reset > /dev/null  )
+    local REDIS_SLOWLOG_RAW=$(stdbuf -oL $REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ${SLOWCMD} get &> /tmp/redis-$HOST-$PORT-slowlog-raw)
+    local REDIS_MAX_CLIENTS=$(stdbuf -oL $REDIS_CLI -h $HOST -p $PORT -a "$PASSWORD" ${CONFCMD} get *"maxclients"* | cut -d " " -f2 | sed -n 2p &> /tmp/redis-$HOST-$PORT-maxclients)
 }
 
 # MAIN LOOP #
 
 echo -n '{"data":['
 for s in $LIST; do
-    HOST=$(echo $s | cut -d":" -f3 | sed 's/*/127.0.0.1/g')
+    HOST=$(echo $s | cut -d":" -f3)
+    HOST=${HOST#\*}
+    ALL_FLAG=${HOST:-'TRUE'}
+    HOST=${HOST:-'127.0.0.1'}
     PORT=$(echo $s | cut -d":" -f4)
 
     # TRY PASSWORD PER EACH DISCOVERED INSTANCE
@@ -155,6 +138,7 @@ for s in $LIST; do
         for (( i=0; i<${#PASSWORDS[@]}; i++ ));
         do
             PASSWORD=${PASSWORDS[$i]}
+            is_redis_unavailability $HOST $PORT $PASSWORD && continue
             INSTANCE=$(discover_redis_instance $HOST $PORT $PASSWORD)
             RDB_PATH=$(discover_redis_rdb_database $HOST $PORT $PASSWORD)
             COMMANDS=$(discover_redis_avalable_commands $HOST $PORT $PASSWORD)
@@ -182,9 +166,10 @@ for s in $LIST; do
             fi
         done
     else
+        is_redis_unavailability $HOST $PORT "" && continue
         INSTANCE=$(discover_redis_instance $HOST $PORT "")
         RDB_PATH=$(discover_redis_rdb_database $HOST $PORT "")
-		COMMANDS=$(discover_redis_avalable_commands $HOST $PORT "")
+        COMMANDS=$(discover_redis_avalable_commands $HOST $PORT "")
         SLAVES=$(discover_redis_avalable_slaves $HOST $PORT "")
 
         if [[ -n $INSTANCE ]]; then
